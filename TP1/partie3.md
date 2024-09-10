@@ -6,21 +6,36 @@ Bon pour ça, facile, on va juste faire en sorte que si le programme coupe, il s
 
 🌞 **Ajoutez une clause dans le fichier `efrei_server.service` pour le restart automatique**
 
-- c'est la clause `Restart=`
-- trouvez la valeur adaptée pour qu'il redémarre tout le temps, dès qu'il est coupé
+```conf
+[Unit]
+Description=Super serveur EFREI
+
+[Service]
+Type=daemon
+ExecStart=/usr/local/bin/efrei_app
+Environment=LISTEN_ADDRESS=192.168.56.114
+
+User=antna
+Group=antna
+
+Restart=always
+```
 
 🌞 **Testez que ça fonctionne**
 
-- lancez le *service* avec une commande `systemctl`
-- affichez le processus lancé par *systemd* avec une commande `ps`
-  - je veux que vous utilisiez une commande avec `| grep quelquechose` pour n'afficher que la ligne qui nous intéresse
-  - vous devriez voir un processus `efrei_server` qui s'exécute
-- tuez le processus manuellement avec une commande `kill`
-- constatez que :
-  - le service a bien été relancé
-  - il y a bien un nouveau processus `efrei_server` qui s'exécute
+```
+[antna@localhost ~]$ ps -e | grep efrei_app
+  13435 ?        00:00:00 efrei_app
+```
 
-> Pour rappel, **TOUTES** les commandes pour faire ce qui est demandé avec un 🌞 doivent figurer dans le compte-rendu.
+```
+[antna@localhost ~]$ kill 13435
+```
+
+```
+[antna@localhost ~]$ ps -e | grep efrei_app
+  13462 ?        00:00:00 efrei_app
+```
 
 ## 2. Utilisateur applicatif
 
@@ -31,48 +46,49 @@ Ainsi, pendant son exécution, le programme aura les droits de cet utilisateur.
 
 🌞 **Créer un utilisateur applicatif**
 
-- c'est lui qui lancera `efrei_server`
-- avec une commande `useradd`
-- choisissez...
-  - un nom approprié
-  - un homedir approprié
-  - un shell approprié
-
-> N'hésitez pas à venir vers moi pour discuter de ce qui est le plus "approprié" si nécessaire.
+```
+[antna@localhost ~]$ sudo useradd app_user
+```
 
 🌞 **Modifier le service pour que ce nouvel utilisateur lance le programme `efrei_server`**
 
-- je vous laisse chercher la clause appropriée à ajouter dans le fichier `.service`
+```
+User=app_user
+Group=app_user
+```
 
 🌞 **Vérifier que le programme s'exécute bien sous l'identité de ce nouvel utilisateur**
 
-- avec une commande `ps`
-- encore là, filtrez la sortie avec un `| grep`
-- n'oubliez pas de redémarrer le service pour que ça prenne effet hein !
-
-> *Déjà à ce stade, le programme a des droits vraiment limités sur le système.*
+```
+[antna@localhost ~]$ ps aux | grep efrei_app
+efreius+   13916  0.2  0.1   2956  1884 ?        Ss   09:22   0:00 /usr/local/bin/efrei_app
+efreius+   13918  0.1  1.4  33772 25984 ?        S    09:22   0:00 /usr/local/bin/efrei_app
+antna      13924  0.0  0.1   6408  2176 pts/0    S+   09:22   0:00 grep --color=auto efrei_app
+```
 
 ## 3. Maîtrisez l'emplacement des fichiers
 
-Pour fonctionner, l'application a besoin de deux choses :
-
-- des **variables d'environnement définies**, ou des valeurs par défaut nulles seront utilisées
-- un **fichier de log** où elle peut écrire
-  - par défaut elle écrit dans `/tmp` comme l'indique le warning au lancement de l'application
-  - vous pouvez définir la variable `LOG_DIR` pour choisir l'emplacement du fichier de logs
-
 🌞 **Choisir l'emplacement du fichier de logs**
 
-- créez un dossier dédié dans `/var/log/` (le dossier standard pour stocker les logs)
-- indiquez votre nouveau dossier de log à l'application avec la variable `LOG_DIR`
-- l'application créera un fichier `server.log` à l'intérieur
+```
+[antna@localhost ~]$ sudo mkdir /var/log/efreiapp
+```
+
+```bash
+Environment="LOG_DIR=/var/log/efreiapp/"
+```
 
 🌞 **Maîtriser les permissions du fichier de logs**
 
-- avec les commandes `chown` et `chmod`
-- appliquez les permissions les plus restrictives possibles sur le dossier dans `var/log/`
-
-![chown chmod](./img/chown-chmod-2.webp)
+```cmd
+[antna@localhost bin]$ sudo mkdir /var/log/efreiapp
+[antna@localhost bin]$ sudo chown efreiuser:efreiuser /var/log/efreiapp/
+[antna@localhost bin]$ ls -al /var/log/efreiapp/
+total 8
+drwxr-xr-x. 2 efreiuser efreiuser   24 Sep 10 10:27 .
+drwxr-xr-x. 8 root      root      4096 Sep 10 10:25 ..
+-rw-r--r--. 1 efreiuser efreiuser   60 Sep 10 10:27 server.log
+```
 
 ## 4. Security hardening
 
@@ -84,11 +100,47 @@ Cette commande est **très** pratique d'un point de vue pédagogique : elle va v
 
 🌞 **Modifier le `.service` pour augmenter son niveau de sécurité**
 
-- ajoutez au moins 5 clauses dans le fichier pour augmenter le niveau de sécurité de l'application
-- n'utilisez que des clauses que vous comprenez, useless sinon
+```
+[Unit]
+Description=Super serveur EFREI
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/efrei_app
+Environment=LISTEN_ADDRESS=192.168.56.114
+Environment=LOG_DIR=/var/log/efreiapp
+
+# Security: Restrict capabilities and privileges
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/usr/local/bin/efrei_app
+ReadWritePaths=/var/log/efreiapp
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+PrivateDevices=true
+LockPersonality=true
+
+LimitNOFILE=1024
+LimitNPROC=256
+
+Restart=always
+RestartSec=5s
+TimeoutStopSec=30s
+
+User=efreiuser
+Group=efreiuser
+
+[Install]
+WantedBy=multi-user.target
+```
 
 🌟 **BONUS : Essayez d'avoir le score le plus haut avec `systemd-analyze security`**
 
-➜ 💡💡💡 **A ce stade, vous pouvez ré-essayez l'injection que vous avez trouvé dans la partie 1. Normalement, on peut faire déjà moins de trucs avec.**
+4.6 la team : `efrei_server.service                      4.6 OK        🙂`
 
 > ➜ [**Lien vers la partie 4**](./part4.md)
