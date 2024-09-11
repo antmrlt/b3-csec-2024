@@ -1,66 +1,68 @@
 # Partie 4 : Autour de l'application
 
-Dans cette dernière partie, on va s'intéresser toujours à améliroer le niveau de sécurité de l'application.  
-Mais cette fois-ci en s'intéressant un peu plus à ce qu'on peut faire à l'extérieur du service.
-
-## Sommaire
-
-- [Partie 4 : Autour de l'application](#partie-4--autour-de-lapplication)
-  - [Sommaire](#sommaire)
-  - [1. Firewalling](#1-firewalling)
-  - [2. Protéger l'app contre le flood](#2-protéger-lapp-contre-le-flood)
-  - [3. Empêcher le programme de faire des actions indésirables](#3-empêcher-le-programme-de-faire-des-actions-indésirables)
-
-## 1. Firewalling
-
-**Le *firewall* permet de filtrer les connexions entrantes sur la machine, mais aussi les connexions sortantes.**
-
-Une fois que notre serveur est en place, et qu'il héberge notre super service, il n'y à priori que très peu de choses qu'on veut autoriser
-
-- notre service doit accueillir les clients sur un port spécifique
-- notre service SSH doit rester accessible sur le port 22
-
-Ca sous-entend que toutes autres accès réseau doit être bloqué, par exemple :
-
-- des connexions entrantes sur d'autres ports
-- n'importe quelle connexion sortante
-
-> **Oui on bloque tout en sortie !** C'est une mesure de sécurité simple et très forte. Seul inconvénient : il faudra désactiver temporairement cette règle pour mettre à jour le serveur quand c'est nécessaire (sinon il ne peut pas utiliser le réseau, pour télécharger des paquets par exemple).
-
 🌞 **Configurer de façon robuste le firewall**
 
-- bloquer toutes les connexions sortantes
-- bloquer toutes les connexions entrantes (y compris le ping) à part si c'est à destination du serveur SSH ou du service `efrei_admin`
+```
+firewall-cmd --permanent --new-policy myOutputPolicy
+
+firewall-cmd --permanent --policy myOutputPolicy --add-ingress-zone HOST
+
+firewall-cmd --permanent --policy myOutputPolicy --add-egress-zone ANY
+
+firewall-cmd --permanent --policy myOutputPolicy --set-target DROP
+```
 
 🌞 **Prouver que la configuration est effective**
 
-- prouver que les connexions sortantes sont bloquées
-- prouver que les pings sont bloqués, mais une connexion SSH fonctionne
+```
+[antna@localhost ~]$ sudo firewall-cmd --list-all
+public (active)
+  target: default
+  icmp-block-inversion: no
+  interfaces: enp0s3 enp0s8
+  sources:
+  services: ssh
+  ports: 8888/tcp
+  protocols:
+  forward: yes
+  masquerade: no
+  forward-ports:
+  source-ports:
+  icmp-blocks:
+  rich rules:
+  ```
 
-![Firewall](./img/fw.jpg)
+```
+[antna@localhost ~]$ ping 1.1.1.1
+PING 1.1.1.1 (1.1.1.1) 56(84) bytes of data.
+^C
+--- 1.1.1.1 ping statistics ---
+3 packets transmitted, 0 received, 100% packet loss, time 2079ms
+```
 
 ## 2. Protéger l'app contre le flood
 
-Fail2ban notre vieil ami ! Fail2ban est un outil classique sur les OS GNU/Linux.
-
-**Le fonctionnement de fail2ban est simpliste :**
-
-- on lui demande surveiller un fichier donné
-- on définit un pattern à repérer dans ce fichier
-- si plusieurs lignes correspondant au pattern se répètent, il effectue une action
-- par exemple, on ajoute une règle firewall
-
-> Quand on configure fail2ban pour surveiller un certain fichier, on dit qu'on crée une *jail* fail2ban.
-
-**Cas concret ici :**
-
-- dès qu'un client se connecte à notre service, une ligne de log est ajouté au fichier de log
-- cette ligne de log contient l'IP du client qui s'est connecté
-- si un client se connecte + de 5 fois en moins de 10 secondes (par exemple) on peut estimer que c'est du flood (tentative de DOS ?)
-- il faudrait blacklister automatiquement l'IP de ce client dans le firewall
-- fail2ban fait exactement ça
-
 🌞 **Installer fail2ban sur la machine**
+
+```
+[antna@localhost ~]$ sudo systemctl start fail2ban
+[antna@localhost ~]$ sudo systemctl status fail2ban
+● fail2ban.service - Fail2Ban Service
+     Loaded: loaded (/usr/lib/systemd/system/fail2ban.service; disabled; preset: disabled)
+     Active: active (running) since Tue 2024-09-10 11:21:06 EDT; 9s ago
+       Docs: man:fail2ban(1)
+    Process: 16388 ExecStartPre=/bin/mkdir -p /run/fail2ban (code=exited, status=0/SUCCESS)
+   Main PID: 16389 (fail2ban-server)
+      Tasks: 3 (limit: 11099)
+     Memory: 14.2M
+        CPU: 48ms
+     CGroup: /system.slice/fail2ban.service
+             └─16389 /usr/bin/python3 -s /usr/bin/fail2ban-server -xf start
+
+Sep 10 11:21:06 localhost.localdomain systemd[1]: Starting Fail2Ban Service...
+Sep 10 11:21:06 localhost.localdomain systemd[1]: Started Fail2Ban Service.
+Sep 10 11:21:06 localhost.localdomain fail2ban-server[16389]: Server ready
+```
 
 🌞 **Ajouter une *jail* fail2ban**
 
@@ -68,11 +70,39 @@ Fail2ban notre vieil ami ! Fail2ban est un outil classique sur les OS GNU/Linux.
 - repérer la ligne de connexion d'un client
 - blacklist à l'aide du firewall l'IP de ce client
 
+Dans le fichier `/etc/fail2ban/jail.local` :
+```
+[efrei_server]
+enabled = true
+port    = 8888
+filter  = efrei_server
+logpath = /var/log/efreiapp/server.log
+maxretry = 3
+bantime = 3600
+findtime = 600
+```
+
+Et dans le fichier ``/etc/fail2ban/filter.d/efrei_server.conf`
+```
+[Definition]
+failregex = \[\d+\.\d+\] Received '.*' from \('<HOST>', \d+\)
+ignoreregex =
+```
+
 🌞 **Vérifier que ça fonctionne !**
 
-- faites-vous ban ! En faisant plein de connexions rapprochées avec le client
-- constatez que le ban est effectif
-- levez le ban (il y a une commande pour lever un ban qu'a réalisé fail2ban)
+```
+[antna@localhost ~]$ sudo fail2ban-client status efrei_server
+Status for the jail: efrei_server
+|- Filter
+|  |- Currently failed: 1
+|  |- Total failed:     38
+|  `- File list:        /var/log/efreiapp/server.log
+`- Actions
+   |- Currently banned: 1
+   |- Total banned:     1
+   `- Banned IP list:   192.168.56.115
+```
 
 ## 3. Empêcher le programme de faire des actions indésirables
 
